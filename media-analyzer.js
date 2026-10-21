@@ -730,6 +730,9 @@
       onProgress: () => {}, video: {}, signal: null, keepMedia: false
     }, options);
     const t0 = performance.now();
+    const timings = {};
+    let tLap = t0;
+    const lap = (name) => { const n = performance.now(); timings[name] = Math.round(n - tLap); tLap = n; };
     const errors = {}, warnings = [];
     const report = (stage, progress, label) => o.onProgress({ stage, progress: Math.min(1, progress), label });
     const checkAbort = () => { if (o.signal && o.signal.aborted) throw abortError(); };
@@ -741,6 +744,7 @@
       onProgress: (v) => report('split', v * 0.1, 'Audio wird extrahiert')
     });
     warnings.push(...media.warnings);
+    lap('split_ms');
     const stages = (media.video ? 1 : 0) + (media.audio ? 1 : 0);
     const span = 0.9 / Math.max(1, stages);
     let cursor = 0.1;
@@ -759,6 +763,7 @@
           errors.video = e.message;
         }
         cursor += span;
+        lap('video_ms');
       }
 
       // 3) Audio
@@ -775,6 +780,7 @@
           errors.audio = e.message;
         }
         cursor += span;
+        lap('audio_ms');
       }
     } finally {
       if (!o.keepMedia) media.release();
@@ -793,6 +799,7 @@
       audio: audioRes,
       errors, warnings,
       elapsed_ms: Math.round(performance.now() - t0),
+      timings: Object.assign(timings, { total_ms: Math.round(performance.now() - t0) }),
       media: o.keepMedia ? media : undefined
     };
   }
@@ -821,6 +828,16 @@
     s += '\n=============== AUDIO-ANALYSE ===============\n\n';
     if (res.audio) s += audioText(res.audio.output);
     else s += res.errors.audio ? `Fehler: ${res.errors.audio}\n` : 'Keine Audiospur gefunden.\n';
+
+    if (res.timings) {
+      const t = res.timings;
+      const sec = (ms) => (ms / 1000).toFixed(1).replace('.', ',') + ' s';
+      s += '\n=============== ZEIT ===============\n\n';
+      s += `Trennen (Video/Audio) : ${sec(t.split_ms)}\n`;
+      if (t.video_ms != null) s += `Videoanalyse          : ${sec(t.video_ms)}\n`;
+      if (t.audio_ms != null) s += `Audioanalyse          : ${sec(t.audio_ms)}\n`;
+      s += `GESAMT                : ${sec(t.total_ms)}\n`;
+    }
 
     if (res.warnings.length) s += '\n⚠ ' + res.warnings.join('\n⚠ ') + '\n';
     return s;
@@ -854,10 +871,12 @@
       <div class="ma-row"><button class="ma-run">Analysieren</button><button class="ma-cancel" disabled>Abbrechen</button></div>
       <p class="ma-status">Bereit.</p>
       <progress class="ma-bar" value="0" max="1"></progress>
+      <p>Laufzeit: <span class="ma-timer">0,0 s</span></p>
       <pre class="ma-out"></pre>
       <div class="ma-dl"></div>
       <details><summary>Rohes Ergebnis-JSON</summary><pre class="ma-json"></pre></details>`;
     const q = (c) => root.querySelector(c);
+    const timerEl = q('.ma-timer');
     const [fileEl, runBtn, cancelBtn, statusEl, bar, outEl, dlEl, jsonEl, exportEl] =
       ['.ma-file', '.ma-run', '.ma-cancel', '.ma-status', '.ma-bar', '.ma-out', '.ma-dl', '.ma-json', '.ma-export'].map(q);
     let ac = null;
@@ -876,6 +895,10 @@
       outEl.textContent = ''; jsonEl.textContent = ''; dlEl.innerHTML = '';
       bar.value = 0; statusEl.textContent = 'Starte …';
       ac = new AbortController();
+      const tStart = performance.now();
+      const tick = setInterval(() => {
+        timerEl.textContent = ((performance.now() - tStart) / 1000).toFixed(1).replace('.', ',') + ' s';
+      }, 100);
       try {
         const res = await analyzeMedia(file, Object.assign({}, options, {
           exportJson: exportEl.checked, signal: ac.signal,
@@ -901,6 +924,8 @@
         return null;
       } finally {
         runBtn.disabled = false; cancelBtn.disabled = true; ac = null;
+        clearInterval(tick);
+        timerEl.textContent = ((performance.now() - tStart) / 1000).toFixed(1).replace('.', ',') + ' s (gesamt)';
       }
     }
 
