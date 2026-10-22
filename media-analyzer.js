@@ -484,7 +484,14 @@
     GRID_COLS: 16, GRID_ROWS: 9,
     MOTION_MIN_DELTA_TIME: 1 / 120, SEEK_TIMEOUT_MS: 3000, STUCK_SAMPLES_LIMIT: 2,
     BLANK_LUMINANCE_THRESHOLD: 10, BLANK_DIFF_THRESHOLD: 2, BLANK_STREAK_LIMIT: 50,
-    CUT_THRESHOLD: 36, CUT_MIN_DISTANCE: 0.35
+    CUT_THRESHOLD: 36, CUT_MIN_DISTANCE: 0.35,
+    // Scores (aus videoanalyse.html)
+    SCORE_COLOR_MAX: 40,          // Farbkontrast-Score = roh / 40 * 100
+    SCORE_MOTION_MAX: 110,        // Bewegungs-Score    = roh / 110 * 100
+    SCORE_CUT_REF_SECONDS: 7,     // Schnitt-Score      = (1 - Zeit/7) * 100 + 25
+    SCORE_CUT_BONUS: 25,
+    // Video-Score = gewichteter Mittelwert der (auf 0-100 begrenzten) Einzelscores
+    W_COLOR: 1, W_MOTION: 1, W_CUT: 1
   };
 
   // ---------- Farbraum ----------
@@ -671,12 +678,33 @@
     if (!results.length) throw new Error('Keine Videoergebnisse.');
     const cuts = detectCuts(results, cfg);
     const dur = results[results.length - 1].time;
+    const colorRaw = average(results.map((r) => r.colorContrastRaw));
+    const motionRaw = average(results.map((r) => r.motionRaw));
+    const secPerCut = cuts.length > 0 ? dur / cuts.length : null;
+
+    // Einzelscores (wie in videoanalyse.html, unbegrenzt)
+    const scoreColor = (colorRaw / cfg.SCORE_COLOR_MAX) * 100;
+    const scoreMotion = (motionRaw / cfg.SCORE_MOTION_MAX) * 100;
+    const scoreCut = secPerCut === null ? null : (1 - secPerCut / cfg.SCORE_CUT_REF_SECONDS) * 100 + cfg.SCORE_CUT_BONUS;
+    // Video-Score 0-100: jeder Einzelscore wird auf 0-100 begrenzt; ohne Schnitte zaehlt der Schnitt-Score als 0
+    const clamp = (v) => Math.min(100, Math.max(0, v));
+    const wSum = cfg.W_COLOR + cfg.W_MOTION + cfg.W_CUT;
+    const videoScore = (cfg.W_COLOR * clamp(scoreColor) + cfg.W_MOTION * clamp(scoreMotion) +
+      cfg.W_CUT * clamp(scoreCut === null ? 0 : scoreCut)) / wSum;
     onProgress(1);
     return {
-      color_contrast_raw: average(results.map((r) => r.colorContrastRaw)),
-      motion_raw: average(results.map((r) => r.motionRaw)),
+      color_contrast_raw: colorRaw,
+      motion_raw: motionRaw,
       cut_count: cuts.length,
-      seconds_per_cut: cuts.length > 0 ? dur / cuts.length : null,
+      seconds_per_cut: secPerCut,
+      scores: {
+        color_contrast: scoreColor,
+        motion: scoreMotion,
+        cut: scoreCut,
+        video_score: videoScore,
+        weights: { color: cfg.W_COLOR, motion: cfg.W_MOTION, cut: cfg.W_CUT },
+        cut_counted_as_zero: scoreCut === null
+      },
       duration_seconds: dur,
       sample_count: results.length,
       cuts,
@@ -820,9 +848,15 @@
   function resultText(res) {
     let s = '=============== VIDEO-ANALYSE ===============\n\n';
     if (res.video) {
-      s += `Farbkontrast (roh) : ${fmt(res.video.color_contrast_raw)}\n`;
-      s += `Bewegung (roh)     : ${fmt(res.video.motion_raw)}\n`;
-      s += `Zeit pro Schnitt   : ${res.video.seconds_per_cut === null ? '–' : fmt(res.video.seconds_per_cut) + ' s'}  (${res.video.cut_count} Schnitte)\n`;
+      const v = res.video, sc = v.scores;
+      s += `Farbkontrast (roh) : ${fmt(v.color_contrast_raw)}\n`;
+      s += `Farbkontrast-Score : ${fmt(sc.color_contrast)}\n\n`;
+      s += `Bewegung (roh)     : ${fmt(v.motion_raw)}\n`;
+      s += `Bewegungs-Score    : ${fmt(sc.motion)}\n\n`;
+      s += `Zeit pro Schnitt   : ${v.seconds_per_cut === null ? '–' : fmt(v.seconds_per_cut) + ' s'}  (${v.cut_count} Schnitte)\n`;
+      s += `Schnitt-Score (+25): ${fmt(sc.cut)}\n\n`;
+      s += `>>> VIDEO-SCORE (0-100, Gewichtung ${sc.weights.color}:${sc.weights.motion}:${sc.weights.cut}) : ${fmt(sc.video_score)}\n`;
+      s += '    (Einzelscores fuer den Video-Score auf 0-100 begrenzt' + (sc.cut_counted_as_zero ? '; ohne Schnitte: Schnitt-Score = 0' : '') + ')\n';
     } else s += res.errors.video ? `Fehler: ${res.errors.video}\n` : 'Kein Video vorhanden.\n';
 
     s += '\n=============== AUDIO-ANALYSE ===============\n\n';
